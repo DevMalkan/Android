@@ -67,19 +67,31 @@ class TfliteInferenceEngine(private val context: Context) : InferenceEngine {
         }
 
         return try {
+            val startTime = System.currentTimeMillis()
+
             val bitmap = imageProxyToBitmap(image)
+
+            // Store original dimensions to maintain aspect ratio awareness
+            val originalWidth = bitmap.width.toFloat()
+            val originalHeight = bitmap.height.toFloat()
+
             val resized = Bitmap.createScaledBitmap(bitmap, inputSize, inputSize, true)
             val inputBuffer = bitmapToByteBuffer(resized)
 
+            val inferenceStartTime = System.currentTimeMillis()
             val outputShape = interpreter!!.getOutputTensor(0).shape()
             val numDetections = outputShape[1]
             val outputBuffer = Array(1) { Array(numDetections) { FloatArray(6) } }
 
             interpreter!!.run(inputBuffer, outputBuffer)
+            val inferenceTime = System.currentTimeMillis() - inferenceStartTime
 
             // TFLite output format: [1, 300, 6] where 6 = [x1, y1, x2, y2, confidence, class_id]
             // Coordinates are NORMALIZED [0, 1] and NMS is already applied by the model
             val detections = mutableListOf<Detection>()
+            val belowThresholdDetections = mutableListOf<String>()
+            var totalDetections = 0
+
             for (i in 0 until numDetections) {
                 val x1_norm = outputBuffer[0][i][0]
                 val y1_norm = outputBuffer[0][i][1]
@@ -88,21 +100,10 @@ class TfliteInferenceEngine(private val context: Context) : InferenceEngine {
                 val conf = outputBuffer[0][i][4]
                 val classId = outputBuffer[0][i][5].toInt()
 
-                // Confidence threshold matching Python implementation
-                if (conf < 0.45f) continue
+                // Skip if confidence is zero (empty detection slot)
+                if (conf < 0.01f) continue
 
-                // Scale normalized coordinates to image dimensions
-                // Note: Using inputSize (320x320) as the reference since that's what model expects
-                val x1 = x1_norm * inputSize
-                val y1 = y1_norm * inputSize
-                val x2 = x2_norm * inputSize
-                val y2 = y2_norm * inputSize
-
-                // Convert from [x1, y1, x2, y2] to [cx, cy, w, h] format for Detection model
-                val w = x2 - x1
-                val h = y2 - y1
-                val cx = x1 + w / 2
-                val cy = y1 + h / 2
+                totalDetections++
 
                 val label = if (classId >= 0 && classId < labels.size) {
                     labels[classId]
@@ -110,8 +111,62 @@ class TfliteInferenceEngine(private val context: Context) : InferenceEngine {
                     "unclassified"
                 }
 
+                // Scale normalized coordinates [0,1] to a standard reference frame (640x480)
+                // This matches the Python preprocessed video dimensions for consistent navigation logic
+                val referenceWidth = 640f
+                val referenceHeight = 480f
+
+                val x1 = x1_norm * referenceWidth
+                val y1 = y1_norm * referenceHeight
+                val x2 = x2_norm * referenceWidth
+                val y2 = y2_norm * referenceHeight
+
+                // Convert from [x1, y1, x2, y2] to [cx, cy, w, h] format for Detection model
+                val w = x2 - x1
+                val h = y2 - y1
+                val cx = x1 + w / 2
+                val cy = y1 + h / 2
+
+                // Log detections below threshold
+                if (conf < CONFIDENCE_THRESHOLD) {
+                    belowThresholdDetections.add(
+                        String.format(
+                            "%-15s conf=%.3f cx=%.1f cy=%.1f w=%.1f h=%.1f",
+                            label, conf, cx, cy, w, h
+                        )
+                    )
+                    continue
+                }
+
                 detections.add(Detection(label, conf, cx, cy, w, h))
             }
+
+            val totalTime = System.currentTimeMillis() - startTime
+
+            // Log inference summary
+            Log.d(TAG, "════════════════════════════════════════════════════════")
+            Log.d(TAG, "INFERENCE COMPLETE - Time: ${inferenceTime}ms (total: ${totalTime}ms)")
+            Log.d(TAG, "Total detections: $totalDetections | Above threshold (${CONFIDENCE_THRESHOLD}): ${detections.size}")
+
+            if (detections.isNotEmpty()) {
+                Log.d(TAG, "─── ACCEPTED DETECTIONS ───")
+                detections.forEachIndexed { idx, det ->
+                    Log.d(TAG, String.format(
+                        "[%d] %-15s conf=%.3f cx=%.1f cy=%.1f w=%.1f h=%.1f",
+                        idx + 1, det.label, det.conf, det.cx, det.cy, det.w, det.h
+                    ))
+                }
+            } else {
+                Log.d(TAG, "No detections above threshold")
+            }
+
+            if (belowThresholdDetections.isNotEmpty()) {
+                Log.d(TAG, "─── BELOW THRESHOLD (conf < ${CONFIDENCE_THRESHOLD}) ───")
+                belowThresholdDetections.forEachIndexed { idx, detection ->
+                    Log.d(TAG, "[$idx] $detection")
+                }
+            }
+            Log.d(TAG, "════════════════════════════════════════════════════════")
 
             // NMS is already applied by the TFLite model, so we return detections directly
             detections
@@ -202,5 +257,6 @@ class TfliteInferenceEngine(private val context: Context) : InferenceEngine {
 
     companion object {
         private const val TAG = "TfliteInferenceEngine"
+        private const val CONFIDENCE_THRESHOLD = 0.40f
     }
 }

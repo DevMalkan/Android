@@ -43,19 +43,29 @@ object CameraAnalyzer {
 
             // Process only 1 frame every 15 frames to avoid chaotic audio output
             // This gives ~1 FPS processing rate from 15 FPS camera feed
-            if (frameCount % 15 != 0L) {
+            if (frameCount % 45 != 0L) {
                 return
             }
+
+            Log.d(TAG, "")
+            Log.d(TAG, "████████████████████████████████████████████████████████")
+            Log.d(TAG, "FRAME #$frameCount (Processing frame ${frameCount / 45})")
+            Log.d(TAG, "████████████████████████████████████████████████████████")
 
             val detections = engine!!.infer(imageProxy)
             val token = Planner.decide(detections)
 
             lastToken = token
 
+            Log.d(TAG, "────────────────────────────────────────────────────────")
+            Log.d(TAG, "FINAL ACTION: $token")
+            Log.d(TAG, "────────────────────────────────────────────────────────")
+
             if (token != ActionToken.CLEAR) {
                 val now = System.currentTimeMillis()
                 if (now - lastCueTimeMs >= CUE_RATE_LIMIT_MS || token == ActionToken.STOP) {
                     lastCueTimeMs = now
+                    Log.d(TAG, "Audio output: ENABLED (rate limit passed)")
                     CueManager.emit(context, tts, token, detections)
 
                     when (token) {
@@ -65,8 +75,15 @@ object CameraAnalyzer {
                     }
 
                     AgentClient.enqueue(token, detections)
+                } else {
+                    Log.d(TAG, "Audio output: SUPPRESSED (rate limit: ${CUE_RATE_LIMIT_MS}ms)")
                 }
+            } else {
+                Log.d(TAG, "Audio output: NONE (path clear)")
             }
+
+            Log.d(TAG, "████████████████████████████████████████████████████████")
+            Log.d(TAG, "")
         } catch (e: Exception) {
             Log.e(TAG, "Frame handling error, ignoring", e)
         } finally {
