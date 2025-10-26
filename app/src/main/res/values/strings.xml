@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">Guide</string>
+    <string name="start_guidance">Start Guidance</string>
+    <string name="pause_guidance">Pause Guidance</string>
+</resources>
